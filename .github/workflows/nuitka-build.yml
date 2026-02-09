@@ -1,0 +1,82 @@
+name: Nuitka Build (Ubuntu 22.04)
+
+on:
+  push:
+    tags: [ 'v*.*.*' ]
+  workflow_dispatch:
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write       # 必须有 write 权限才能创建 release / 上传 asset
+    env:
+      # 强制 OpenCV 使用 ffmpeg 后端，避免误用系统的 libGL / GUI 组件
+      OPENCV_VIDEOIO_PRIORITY: ffmpeg
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0     # 如果后面想自动生成 changelog 可以拉全历史
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          # 仅安装运行时需要的基础库，显式避免安装 X11/GUI 组件（libsm6/libxrender1/libxext6）
+          sudo apt-get install -y --no-install-recommends libglib2.0-0 || true
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then
+            python -m pip install -r requirements.txt
+          else
+            # 使用 headless wheel 避免 GUI 依赖
+            python -m pip install Flask opencv-python-headless numpy
+          fi
+          # 用于 Nuitka onefile 压缩（可选，但推荐）
+          python -m pip install nuitka zstandard
+
+      - name: Build with Nuitka (direct invocation)
+        run: |
+          # 减少对宿主动态库的依赖：尝试静态链接 libpython
+          python -m nuitka \
+            --onefile \
+            --output-dir=dist \
+            --output-filename=camera_web \
+            --lto=yes \
+            --static-libpython=yes \
+            --include-package=flask \
+            --include-package=numpy \
+            --include-module=cv2 \
+            camera_web.py
+
+      - name: List built files (for debug)
+        run: |
+          ls -la dist || true
+          file dist/camera_web* || true
+          du -sh dist/camera_web* || true
+
+      - name: Rename binary to include version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          echo "Renaming built binary to include tag name"
+          mv dist/camera_web dist/camera_web-${{ github.ref_name }}_ubuntu2204
+          ls -la dist || true
+
+      # ──────────────────────────────── release ──────────────────────────────────
+
+      - name: Upload binary to Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          # 如果 tag 已存在 → 会自动追加 asset，不会重复创建 release
+          # 如果 tag 不存在 → 会自动创建 release
+          tag_name: ${{ github.ref_name }}           # 自动使用当前 tag
+          name: Release ${{ github.ref_name }}
+          fail_on_unmatched_files: true
+          generate_release_notes: true               # 自动生成 release notes（基于 commits）
+          files: |
+            dist/camera_web-${{ github.ref_name }}_ubuntu2204
