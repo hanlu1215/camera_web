@@ -6,7 +6,7 @@ import threading
 import time
 import os
 from datetime import datetime
-from flask import Flask, Response, render_template_string, jsonify
+from flask import Flask, Response, render_template_string, jsonify, request
 
 # ======================
 # 全局变量
@@ -33,6 +33,8 @@ recording_lock = threading.Lock()
 recording_thread_started = False
 recording_thread_lock = threading.Lock()
 recording_event = threading.Event()
+# 录制间隔（秒），默认10秒
+recording_interval = 10.0
 
 # ======================
 # Flask Web
@@ -58,9 +60,13 @@ HTML_PAGE = """
 
     <h2>Motion Status:</h2>
     <p id="status">Normal</p>
-    <h2>Recording:</h2>
+    <h2>Recording: <span id="rec_interval_display"></span></h2>
     <p id="rec_status">Stopped</p>
     <p id="rec_dir"></p>
+    <p>
+        录制间隔（秒）：<input id="rec_interval" type="number" min="0.01" max="3600" step="0.01" style="width:6rem;"> 
+        <button id="setInterval">Set</button>
+    </p>
     <button id="startRec" style="display:inline-block;margin-right:1rem;">Start Recording</button>
     <button id="stopRec" style="display:inline-block;">Stop Recording</button>
     <button id="enableSound" style="display:inline-block;margin-left:1rem;">Enable Sound</button>
@@ -151,12 +157,28 @@ HTML_PAGE = """
         (function(){
             const startBtn = document.getElementById('startRec');
             const stopBtn = document.getElementById('stopRec');
+            const recIntervalInput = document.getElementById('rec_interval');
+            let recEditing = false;
+
+            recIntervalInput.addEventListener('focus', () => { recEditing = true; });
+            recIntervalInput.addEventListener('blur', () => { recEditing = false; });
 
             function refreshRecStatus() {
                 fetch('/recording_status')
                     .then(r => r.json()).then(data => {
                         document.getElementById('rec_status').innerText = data.recording ? 'Recording' : 'Stopped';
                         document.getElementById('rec_dir').innerText = data.dir ? ('Folder: ' + data.dir) : '';
+                        // update interval input & display if provided and user is not editing
+                        if (data.interval !== undefined) {
+                            if (!recEditing) {
+                                recIntervalInput.value = data.interval;
+                            }
+                            // always update visible display so user sees current value
+                            try {
+                                const v = parseFloat(data.interval);
+                                document.getElementById('rec_interval_display').innerText = isFinite(v) ? (v + ' s') : '';
+                            } catch (e) { }
+                        }
                         startBtn.style.display = data.recording ? 'none' : 'inline-block';
                         stopBtn.style.display = data.recording ? 'inline-block' : 'none';
                     }).catch(()=>{});
@@ -167,6 +189,21 @@ HTML_PAGE = """
             });
             stopBtn.addEventListener('click', function () {
                 fetch('/stop_recording').then(r=>r.json()).then(()=>refreshRecStatus()).catch(()=>{});
+            });
+
+            // set interval control
+            const setBtn = document.getElementById('setInterval');
+            function submitInterval() {
+                const val = parseFloat(recIntervalInput.value);
+                if (!isFinite(val) || val < 0.01) return;
+                fetch('/set_recording_interval?interval=' + encodeURIComponent(val)).then(r=>r.json()).then(()=>refreshRecStatus()).catch(()=>{});
+                recIntervalInput.blur();
+            }
+            setBtn.addEventListener('click', submitInterval);
+            recIntervalInput.addEventListener('keydown', function(e) {
+                if (e.key === 'Enter') {
+                    submitInterval();
+                }
             });
 
             // initial status and periodic refresh
@@ -193,7 +230,7 @@ def status():
 
 @app.route('/recording_status')
 def recording_status():
-    return jsonify({'recording': bool(recording_active), 'dir': recording_dir or ''})
+    return jsonify({'recording': bool(recording_active), 'dir': recording_dir or '', 'interval': recording_interval})
 
 
 @app.route('/start_recording')
@@ -237,6 +274,23 @@ def stop_recording():
         recording_active = False
         recording_event.clear()
     return jsonify({'stopped': True})
+
+
+@app.route('/set_recording_interval')
+def set_recording_interval():
+    global recording_interval
+    val = request.args.get('interval', None)
+    if val is None:
+        return jsonify({'success': False, 'error': 'missing interval parameter'}), 400
+    try:
+        f = float(val)
+    except Exception:
+        return jsonify({'success': False, 'error': 'invalid interval'}), 400
+    if f < 0.01:
+        return jsonify({'success': False, 'error': 'interval must be >= 0.01'}), 400
+    with recording_lock:
+        recording_interval = f
+    return jsonify({'success': True, 'interval': recording_interval})
 
 def generate():
     global output_frame, active_clients, camera
@@ -418,8 +472,8 @@ def recording_loop():
     last_saved = 0
 
     while True:
-        # 等待一会儿或直到录制被触发
-        recording_event.wait(timeout=1.0)
+        # 等待一会儿或直到录制被触发（短超时以支持高频率保存）
+        recording_event.wait(timeout=0.01)
 
         if not recording_active:
             time.sleep(0.2)
@@ -430,12 +484,15 @@ def recording_loop():
             frame = None if output_frame is None else output_frame.copy()
 
         if frame is None:
-            time.sleep(0.5)
+            # 当帧不可用时短睡，避免长时间阻塞
+            time.sleep(0.01)
             continue
 
         now_ts = time.time()
-        # 首次保存或者到达10秒间隔
-        if last_saved == 0 or (now_ts - last_saved) >= 10:
+        # 首次保存或者到达设置的间隔
+        with recording_lock:
+            interval = recording_interval
+        if last_saved == 0 or (now_ts - last_saved) >= interval:
             try:
                 tstr = time.strftime('%Y%m%d_%H%M%S', time.localtime(now_ts))
                 filename = f"img-{tstr}.jpg"
@@ -448,8 +505,12 @@ def recording_loop():
             except Exception:
                 pass
 
-        # 小睡避免忙循环
-        time.sleep(0.5)
+        # 根据设置的间隔调整短睡，避免忙循环同时支持高频率
+        try:
+            sleep_time = max(0.001, min(0.05, interval / 2.0))
+        except Exception:
+            sleep_time = 0.01
+        time.sleep(sleep_time)
 
 
 def ensure_recording_started():
