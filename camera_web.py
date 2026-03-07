@@ -311,21 +311,21 @@ def generate():
                 time.sleep(0.01)
                 continue
 
-                # 在发送前更新时间水印，确保浏览器端流始终显示当前时间
-                try:
-                    tstamp = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
-                    fh, fw = frame.shape[:2]
-                    font = cv2.FONT_HERSHEY_SIMPLEX
-                    scale = 0.6
-                    thickness = 2
-                    x = 10
-                    y = fh - 10
-                    cv2.putText(frame, tstamp, (x, y), font, scale, (0, 0, 0), thickness + 2, cv2.LINE_AA)
-                    cv2.putText(frame, tstamp, (x, y), font, scale, (255, 255, 255), thickness, cv2.LINE_AA)
-                except Exception:
-                    pass
+            # 在发送前更新时间水印，确保浏览器端流始终显示当前时间
+            try:
+                tstamp = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
+                fh, fw = frame.shape[:2]
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                scale = 0.6
+                thickness = 2
+                x = 10
+                y = fh - 10
+                cv2.putText(frame, tstamp, (x, y), font, scale, (0, 0, 0), thickness + 2, cv2.LINE_AA)
+                cv2.putText(frame, tstamp, (x, y), font, scale, (255, 255, 255), thickness, cv2.LINE_AA)
+            except Exception:
+                pass
 
-                ret, jpeg = cv2.imencode('.jpg', frame)
+            ret, jpeg = cv2.imencode('.jpg', frame)
             if not ret:
                 time.sleep(0.01)
                 continue
