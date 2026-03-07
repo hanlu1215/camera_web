@@ -273,6 +273,24 @@ def stop_recording():
     with recording_lock:
         recording_active = False
         recording_event.clear()
+    # 如果没有活跃的流媒体客户端，则停止录制后释放摄像头以节省资源
+    try:
+        with active_clients_lock:
+            remaining = active_clients
+        if remaining == 0:
+            try:
+                if camera is not None:
+                    camera.release()
+            except Exception:
+                pass
+            # 将 camera 置为 None，以便后续需要时可重新打开
+            try:
+                globals()['camera'] = None
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     return jsonify({'stopped': True})
 
 
@@ -341,14 +359,21 @@ def generate():
         with active_clients_lock:
             active_clients -= 1
             remaining = active_clients
-
         if remaining == 0:
-            try:
-                if camera is not None:
-                    camera.release()
-            except Exception:
-                pass
-            camera = None
+            # 如果当前正在录制，则不要释放摄像头（录制线程需要持续帧）
+            with recording_lock:
+                is_recording = bool(recording_active)
+
+            if not is_recording:
+                try:
+                    if camera is not None:
+                        camera.release()
+                except Exception:
+                    pass
+                try:
+                    globals()['camera'] = None
+                except Exception:
+                    pass
 
 @app.route('/video_feed')
 def video_feed():
