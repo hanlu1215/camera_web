@@ -311,7 +311,21 @@ def generate():
                 time.sleep(0.01)
                 continue
 
-            ret, jpeg = cv2.imencode('.jpg', frame)
+                # 在发送前更新时间水印，确保浏览器端流始终显示当前时间
+                try:
+                    tstamp = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
+                    fh, fw = frame.shape[:2]
+                    font = cv2.FONT_HERSHEY_SIMPLEX
+                    scale = 0.6
+                    thickness = 2
+                    x = 10
+                    y = fh - 10
+                    cv2.putText(frame, tstamp, (x, y), font, scale, (0, 0, 0), thickness + 2, cv2.LINE_AA)
+                    cv2.putText(frame, tstamp, (x, y), font, scale, (255, 255, 255), thickness, cv2.LINE_AA)
+                except Exception:
+                    pass
+
+                ret, jpeg = cv2.imencode('.jpg', frame)
             if not ret:
                 time.sleep(0.01)
                 continue
@@ -443,7 +457,7 @@ def camera_loop():
 
         prev_frame = gray.copy()
 
-        # 在输出帧左下角添加时间水印
+        # 在输出帧左下角添加时间水印（camera_loop 保留水印绘制）
         try:
             timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
             fh, fw = frame.shape[:2]
@@ -456,7 +470,6 @@ def camera_loop():
             cv2.putText(frame, timestamp, (x, y), font, scale, (255, 255, 255), thickness, cv2.LINE_AA)
         except Exception:
             pass
-
         with lock:
             output_frame = frame.copy()
 
@@ -499,6 +512,19 @@ def recording_loop():
                 with recording_lock:
                     target_dir = recording_dir
                 if target_dir:
+                    # 在保存前确保时间水印是最新的（在本地拷贝上绘制，避免修改共享的 output_frame）
+                    try:
+                        tstamp = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now_ts))
+                        fh, fw = frame.shape[:2]
+                        font = cv2.FONT_HERSHEY_SIMPLEX
+                        scale = 0.6
+                        thickness = 2
+                        x = 10
+                        y = fh - 10
+                        cv2.putText(frame, tstamp, (x, y), font, scale, (0, 0, 0), thickness + 2, cv2.LINE_AA)
+                        cv2.putText(frame, tstamp, (x, y), font, scale, (255, 255, 255), thickness, cv2.LINE_AA)
+                    except Exception:
+                        pass
                     path = os.path.join(target_dir, filename)
                     cv2.imwrite(path, frame)
                     last_saved = now_ts
