@@ -329,21 +329,23 @@ def stop_recording():
     with recording_lock:
         recording_active = False
         recording_event.clear()
-    # 如果没有活跃的流媒体客户端，则停止录制后释放摄像头以节省资源
+    # 如果没有活跃的流媒体客户端且运动检测录像也未启动，才释放摄像头
     try:
         with active_clients_lock:
             remaining = active_clients
         if remaining == 0:
-            try:
-                if camera is not None:
-                    camera.release()
-            except Exception:
-                pass
-            # 将 camera 置为 None，以便后续需要时可重新打开
-            try:
-                globals()['camera'] = None
-            except Exception:
-                pass
+            with motion_recording_lock:
+                is_motion_recording = bool(motion_recording_active)
+            if not is_motion_recording:
+                try:
+                    if camera is not None:
+                        camera.release()
+                except Exception:
+                    pass
+                try:
+                    globals()['camera'] = None
+                except Exception:
+                    pass
     except Exception:
         pass
 
@@ -391,6 +393,25 @@ def stop_motion_recording():
     with motion_recording_lock:
         motion_recording_active = False
         motion_recording_event.clear()
+    # 如果没有活跃的流媒体客户端且定时录像也未启动，则释放摄像头
+    try:
+        with active_clients_lock:
+            remaining = active_clients
+        if remaining == 0:
+            with recording_lock:
+                is_recording = bool(recording_active)
+            if not is_recording:
+                try:
+                    if camera is not None:
+                        camera.release()
+                except Exception:
+                    pass
+                try:
+                    globals()['camera'] = None
+                except Exception:
+                    pass
+    except Exception:
+        pass
     return jsonify({'stopped': True})
 
 
@@ -469,11 +490,13 @@ def generate():
             active_clients -= 1
             remaining = active_clients
         if remaining == 0:
-            # 如果当前正在录制，则不要释放摄像头（录制线程需要持续帧）
+            # 如果正在录制（定时或运动检测），则不要释放摄像头（录制线程需要持续帧）
             with recording_lock:
                 is_recording = bool(recording_active)
+            with motion_recording_lock:
+                is_motion_recording = bool(motion_recording_active)
 
-            if not is_recording:
+            if not is_recording and not is_motion_recording:
                 try:
                     if camera is not None:
                         camera.release()
