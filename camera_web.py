@@ -35,6 +35,19 @@ recording_thread_lock = threading.Lock()
 recording_event = threading.Event()
 # 录制间隔（秒），默认10秒
 recording_interval = 10.0
+# 单次录像最大图片数（172800 = 10秒间隔 * 24小时 * 20天），超出后循环覆盖
+MAX_RECORDING_IMAGES = 172800
+recording_image_counter = 0
+
+# 运动检测录像相关（按摄像头FPS保存，不受录制间隔限制）
+motion_recording_active = False
+motion_recording_dir = None
+motion_recording_lock = threading.Lock()
+motion_recording_thread_started = False
+motion_recording_thread_lock = threading.Lock()
+motion_recording_event = threading.Event()
+motion_recording_image_counter = 0
+MAX_MOTION_RECORDING_IMAGES = 172800
 
 # ======================
 # Flask Web
@@ -60,7 +73,7 @@ HTML_PAGE = """
 
     <h2>Motion Status:</h2>
     <p id="status">Normal</p>
-    <h2>Recording: <span id="rec_interval_display"></span></h2>
+    <h2>Recording (定时): <span id="rec_interval_display"></span></h2>
     <p id="rec_status">Stopped</p>
     <p id="rec_dir"></p>
     <p>
@@ -69,6 +82,14 @@ HTML_PAGE = """
     </p>
     <button id="startRec" style="display:inline-block;margin-right:1rem;">Start Recording</button>
     <button id="stopRec" style="display:inline-block;">Stop Recording</button>
+
+    <h2>Motion Recording (运动触发): <span id="motion_rec_status_hint"></span></h2>
+    <p id="motion_rec_status">Stopped</p>
+    <p id="motion_rec_dir"></p>
+    <p id="motion_rec_motion_status">Motion: --</p>
+    <button id="startMotionRec" style="display:inline-block;margin-right:1rem;">Start Motion Recording</button>
+    <button id="stopMotionRec" style="display:inline-block;">Stop Motion Recording</button>
+
     <button id="enableSound" style="display:inline-block;margin-left:1rem;">Enable Sound</button>
 
     <script>
@@ -158,6 +179,8 @@ HTML_PAGE = """
             const startBtn = document.getElementById('startRec');
             const stopBtn = document.getElementById('stopRec');
             const recIntervalInput = document.getElementById('rec_interval');
+            const motionStartBtn = document.getElementById('startMotionRec');
+            const motionStopBtn = document.getElementById('stopMotionRec');
             let recEditing = false;
 
             recIntervalInput.addEventListener('focus', () => { recEditing = true; });
@@ -181,6 +204,12 @@ HTML_PAGE = """
                         }
                         startBtn.style.display = data.recording ? 'none' : 'inline-block';
                         stopBtn.style.display = data.recording ? 'inline-block' : 'none';
+                        // motion recording status
+                        document.getElementById('motion_rec_status').innerText = data.motion_recording ? 'Recording' : 'Stopped';
+                        document.getElementById('motion_rec_dir').innerText = data.motion_dir ? ('Folder: ' + data.motion_dir) : '';
+                        document.getElementById('motion_rec_status_hint').innerText = data.motion_recording ? '● Active' : '';
+                        motionStartBtn.style.display = data.motion_recording ? 'none' : 'inline-block';
+                        motionStopBtn.style.display = data.motion_recording ? 'inline-block' : 'none';
                     }).catch(()=>{});
             }
 
@@ -189,6 +218,13 @@ HTML_PAGE = """
             });
             stopBtn.addEventListener('click', function () {
                 fetch('/stop_recording').then(r=>r.json()).then(()=>refreshRecStatus()).catch(()=>{});
+            });
+
+            motionStartBtn.addEventListener('click', function () {
+                fetch('/start_motion_recording').then(r=>r.json()).then(()=>refreshRecStatus()).catch(()=>{});
+            });
+            motionStopBtn.addEventListener('click', function () {
+                fetch('/stop_motion_recording').then(r=>r.json()).then(()=>refreshRecStatus()).catch(()=>{});
             });
 
             // set interval control
@@ -210,6 +246,19 @@ HTML_PAGE = """
             refreshRecStatus();
             setInterval(refreshRecStatus, 1000);
         })();
+
+        // Separate poll for motion detection status (faster update)
+        setInterval(function () {
+            fetch('/motion_recording_status')
+                .then(r => r.json()).then(data => {
+                    const el = document.getElementById('motion_rec_motion_status');
+                    if (data.motion_recording) {
+                        el.innerText = data.motion_detected ? 'Motion: YES (saving...)' : 'Motion: no';
+                    } else {
+                        el.innerText = 'Motion: --';
+                    }
+                }).catch(()=>{});
+        }, 500);
     </script>
 </body>
 </html>
@@ -230,12 +279,18 @@ def status():
 
 @app.route('/recording_status')
 def recording_status():
-    return jsonify({'recording': bool(recording_active), 'dir': recording_dir or '', 'interval': recording_interval})
+    return jsonify({
+        'recording': bool(recording_active),
+        'dir': recording_dir or '',
+        'interval': recording_interval,
+        'motion_recording': bool(motion_recording_active),
+        'motion_dir': motion_recording_dir or ''
+    })
 
 
 @app.route('/start_recording')
 def start_recording():
-    global recording_active, recording_dir
+    global recording_active, recording_dir, recording_image_counter
     ensure_camera_started()
 
     # 等待首帧可用
@@ -261,6 +316,7 @@ def start_recording():
     with recording_lock:
         recording_dir = dir_path
         recording_active = True
+        recording_image_counter = 0  # 新录像开始，重置计数器
         recording_event.set()
 
     ensure_recording_started()
@@ -292,6 +348,59 @@ def stop_recording():
         pass
 
     return jsonify({'stopped': True})
+
+
+@app.route('/start_motion_recording')
+def start_motion_recording():
+    global motion_recording_active, motion_recording_dir, motion_recording_image_counter
+    ensure_camera_started()
+
+    # 等待首帧可用
+    waited = 0
+    while True:
+        with lock:
+            frame = None if output_frame is None else output_frame.copy()
+        if frame is not None:
+            break
+        time.sleep(0.05)
+        waited += 0.05
+        if waited > 5:
+            break
+
+    # 创建新的文件夹
+    now = datetime.now()
+    folder_name = 'motion_' + now.strftime('%Y%m%d_%H%M%S')
+    base_dir = os.path.join(os.getcwd(), 'recordings')
+    os.makedirs(base_dir, exist_ok=True)
+    dir_path = os.path.join(base_dir, folder_name)
+    os.makedirs(dir_path, exist_ok=True)
+
+    with motion_recording_lock:
+        motion_recording_dir = dir_path
+        motion_recording_active = True
+        motion_recording_image_counter = 0
+        motion_recording_event.set()
+
+    ensure_motion_recording_started()
+    return jsonify({'started': True, 'dir': motion_recording_dir})
+
+
+@app.route('/stop_motion_recording')
+def stop_motion_recording():
+    global motion_recording_active
+    with motion_recording_lock:
+        motion_recording_active = False
+        motion_recording_event.clear()
+    return jsonify({'stopped': True})
+
+
+@app.route('/motion_recording_status')
+def motion_recording_status():
+    return jsonify({
+        'motion_recording': bool(motion_recording_active),
+        'dir': motion_recording_dir or '',
+        'motion_detected': bool(motion_detected)
+    })
 
 
 @app.route('/set_recording_interval')
@@ -505,7 +614,7 @@ def camera_loop():
 # 录制后台线程（每隔10秒保存一张图片）
 # ======================
 def recording_loop():
-    global recording_active, recording_dir
+    global recording_active, recording_dir, recording_image_counter
 
     last_saved = 0
 
@@ -532,10 +641,12 @@ def recording_loop():
             interval = recording_interval
         if last_saved == 0 or (now_ts - last_saved) >= interval:
             try:
-                tstr = time.strftime('%Y%m%d_%H%M%S', time.localtime(now_ts))
-                filename = f"img-{tstr}.jpg"
+                # 使用循环计数器生成文件名（0 ~ MAX_RECORDING_IMAGES-1，6位数字填充）
                 with recording_lock:
+                    counter = recording_image_counter
+                    recording_image_counter = (recording_image_counter + 1) % MAX_RECORDING_IMAGES
                     target_dir = recording_dir
+                filename = f"img-{counter:06d}.jpg"
                 if target_dir:
                     # 在保存前确保时间水印是最新的（在本地拷贝上绘制，避免修改共享的 output_frame）
                     try:
@@ -571,6 +682,77 @@ def ensure_recording_started():
             t = threading.Thread(target=recording_loop, daemon=True)
             t.start()
             recording_thread_started = True
+
+
+# ======================
+# 运动检测录像后台线程（按摄像头FPS保存，仅在有运动时保存）
+# ======================
+def motion_recording_loop():
+    global motion_recording_active, motion_recording_dir, motion_recording_image_counter
+
+    last_saved = 0
+
+    while True:
+        # 等待触发或短暂超时
+        motion_recording_event.wait(timeout=0.01)
+
+        if not motion_recording_active:
+            time.sleep(0.2)
+            continue
+
+        # 检查是否有运动
+        if not motion_detected:
+            time.sleep(0.05)
+            continue
+
+        # 取一帧并保存（按摄像头FPS，不受 recording_interval 限制）
+        with lock:
+            frame = None if output_frame is None else output_frame.copy()
+
+        if frame is None:
+            time.sleep(0.01)
+            continue
+
+        now_ts = time.time()
+        try:
+            # 使用循环计数器生成文件名
+            with motion_recording_lock:
+                counter = motion_recording_image_counter
+                motion_recording_image_counter = (motion_recording_image_counter + 1) % MAX_MOTION_RECORDING_IMAGES
+                target_dir = motion_recording_dir
+            filename = f"motion-{counter:06d}.jpg"
+            if target_dir:
+                # 绘制时间水印
+                try:
+                    tstamp = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now_ts))
+                    fh, fw = frame.shape[:2]
+                    font = cv2.FONT_HERSHEY_SIMPLEX
+                    scale = 0.6
+                    thickness = 2
+                    x = 10
+                    y = fh - 10
+                    cv2.putText(frame, tstamp, (x, y), font, scale, (0, 0, 0), thickness + 2, cv2.LINE_AA)
+                    cv2.putText(frame, tstamp, (x, y), font, scale, (255, 255, 255), thickness, cv2.LINE_AA)
+                except Exception:
+                    pass
+                path = os.path.join(target_dir, filename)
+                cv2.imwrite(path, frame)
+                last_saved = now_ts
+        except Exception:
+            pass
+
+        # 按摄像头FPS速度保存（约0.03s匹配camera_loop帧率）
+        time.sleep(0.03)
+
+
+def ensure_motion_recording_started():
+    global motion_recording_thread_started
+    with motion_recording_thread_lock:
+        if not motion_recording_thread_started:
+            t = threading.Thread(target=motion_recording_loop, daemon=True)
+            t.start()
+            motion_recording_thread_started = True
+
 
 # ======================
 # 主程序
