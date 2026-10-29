@@ -1,0 +1,53 @@
+name: Rust Build (Ubuntu 22.04)
+
+on:
+  push:
+    tags: [ 'v*.*.*' ]
+  workflow_dispatch:
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write       # needed to create releases / upload assets
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp target/release/camera_web dist/camera_web
+          chmod +x dist/camera_web
+          ls -lh dist/camera_web
+          file dist/camera_web
+
+      - name: Rename binary to include version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: mv dist/camera_web dist/camera_web-${{ github.ref_name }}_ubuntu2204
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: camera_web-${{ github.ref_name || 'manual' }}-ubuntu2204
+          path: dist/camera_web*
+          if-no-files-found: error
+
+      - name: Upload binary to Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          files: |
+            dist/camera_web-${{ github.ref_name }}_ubuntu2204

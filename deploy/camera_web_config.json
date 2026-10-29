@@ -1,0 +1,6 @@
+{
+  "_comment": "改动这里的路径后重启 camera-web 即可。video_dir 可以放在 recordings_dir 之外。相对路径相对于启动时的工作目录。",
+  "recordings_dir": "/vol1/1000/TEMP/recordings",
+  "video_dir": "/vol1/1000/TEMP/recordings/Video",
+  "settings": "/vol1/1000/TEMP/camera_web_settings.json"
+}

@@ -1,1 +1,6 @@
+target/
 dist/*
+recordings/
+camera_web_settings.json
+*.log
+/camera_web_config.json

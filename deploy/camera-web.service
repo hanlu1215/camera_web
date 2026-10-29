@@ -1,0 +1,18 @@
+[Unit]
+Description=Camera Web Service (Rust)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/vol1/1000/TEMP/camera_web_bin --config /vol1/1000/TEMP/camera_web_config.json --port 5000 --start-motion-recording
+WorkingDirectory=/vol1/1000/TEMP
+Restart=always
+RestartSec=5
+User=root
+Environment=RUST_LOG=info
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

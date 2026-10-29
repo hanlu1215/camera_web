@@ -1,0 +1,583 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Camera Monitor</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --panel-2: #1c2230; --border: #30363d;
+    --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff; --danger: #f85149;
+    --ok: #3fb950; --warn: #d29922; --radius: 10px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", sans-serif;
+  }
+  header {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 14px 20px; border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; background: rgba(13, 17, 23, .92);
+    backdrop-filter: blur(8px); z-index: 5; flex-wrap: wrap;
+  }
+  h1 { font-size: 18px; margin: 0; font-weight: 600; }
+  h2 { font-size: 15px; margin: 0 0 10px; font-weight: 600; }
+  h3 { font-size: 13px; margin: 14px 0 6px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  main {
+    display: grid; grid-template-columns: minmax(0, 2fr) minmax(300px, 1fr);
+    gap: 16px; padding: 16px; max-width: 1500px; margin: 0 auto;
+  }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px; }
+  .history { grid-column: 1 / -1; }
+  @media (max-width: 900px) {
+    main { grid-template-columns: 1fr; }
+    .live, .controls, .history { grid-column: 1; }
+  }
+  #videoWrap {
+    position: relative; border: 4px solid transparent; border-radius: 8px;
+    overflow: hidden; background: #000; transition: border-color .15s, box-shadow .15s;
+  }
+  #videoWrap.alert { border-color: var(--danger); box-shadow: 0 0 22px rgba(248, 81, 73, .7); }
+  #video { display: block; width: 100%; height: auto; }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+  .pills { display: flex; gap: 8px; flex-wrap: wrap; }
+  .pill {
+    font-size: 12px; padding: 3px 10px; border-radius: 999px;
+    border: 1px solid var(--border); color: var(--muted);
+  }
+  .pill.on { color: var(--ok); border-color: rgba(63, 185, 80, .5); background: rgba(63, 185, 80, .1); }
+  .pill.alert { color: var(--danger); border-color: rgba(248, 81, 73, .5); background: rgba(248, 81, 73, .1); }
+  button {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 7px; padding: 6px 12px; font-size: 13px; cursor: pointer;
+    transition: border-color .15s, background .15s;
+  }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: #1f6feb; border-color: #1f6feb; }
+  button.danger { color: var(--danger); border-color: rgba(248, 81, 73, .45); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  input[type=number], input[type=time] {
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 5px 8px; font-size: 13px;
+  }
+  input[type=number] { width: 88px; }
+  label { font-size: 13px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+  .muted { color: var(--muted); font-size: 12.5px; }
+  .block + .block { border-top: 1px solid var(--border); margin-top: 8px; }
+  .btnrow { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+  .toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
+  .toolbar h2 { margin: 0; margin-right: auto; }
+  .auto {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    background: var(--panel-2); border: 1px solid var(--border);
+    padding: 10px 12px; border-radius: 8px; margin-bottom: 12px;
+  }
+  #historyList { display: flex; flex-direction: column; gap: 8px; }
+  .item {
+    display: grid; grid-template-columns: 104px minmax(0, 1fr) auto;
+    gap: 12px; align-items: center; padding: 10px;
+    background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px;
+  }
+  @media (max-width: 700px) { .item { grid-template-columns: 1fr; } .thumb { width: 100%; height: 130px; } }
+  .thumb { width: 104px; height: 60px; object-fit: cover; border-radius: 6px; background: #000; border: 1px solid var(--border); }
+  .itemMain { min-width: 0; }
+  .itemHead { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .itemName { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip { font-size: 11px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+  .chip.motion { color: #d2a8ff; border-color: rgba(210, 168, 255, .4); }
+  .chip.snapshot { color: #79c0ff; border-color: rgba(121, 192, 255, .4); }
+  .chip.video { color: #7ee787; border-color: rgba(126, 231, 135, .4); }
+  .chip.active { color: var(--danger); border-color: rgba(248, 81, 73, .5); }
+  .chip.busy { color: var(--warn); border-color: rgba(210, 153, 34, .5); }
+  .chip.warn { color: var(--warn); border-color: rgba(210, 153, 34, .5); }
+  .itemActions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+  .videos { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
+  .videoLine { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--muted); flex-wrap: wrap; }
+  .empty { text-align: center; color: var(--muted); padding: 28px 0; }
+  #toast {
+    position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%) translateY(20px);
+    background: #21262d; border: 1px solid var(--border); color: var(--text);
+    padding: 10px 16px; border-radius: 8px; font-size: 13px; opacity: 0;
+    pointer-events: none; transition: opacity .2s, transform .2s; max-width: 90vw; z-index: 30;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  #toast.error { border-color: var(--danger); }
+  dialog {
+    background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    border-radius: 12px; padding: 12px; width: min(1000px, 94vw);
+  }
+  dialog::backdrop { background: rgba(0, 0, 0, .75); }
+  .playerHead { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 10px; }
+  #playerVideo { width: 100%; max-height: 70vh; background: #000; border-radius: 8px; }
+  .warn { color: var(--warn); font-size: 12.5px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Camera Monitor</h1>
+  <div class="pills">
+    <span id="livePill" class="pill">摄像头：待机</span>
+    <span id="motionPill" class="pill">Motion: Normal</span>
+    <span id="clientPill" class="pill">Clients: 0</span>
+  </div>
+</header>
+
+<main>
+  <section class="card live">
+    <div id="videoWrap"><img id="video" src="/video_feed" alt="实时画面"></div>
+    <div class="row">
+      <span id="motionText" class="muted">Motion Status: Normal</span>
+      <button id="enableSound">Enable Sound</button>
+    </div>
+  </section>
+
+  <section class="card controls">
+    <h2>录像控制</h2>
+    <div class="block">
+      <h3>定时抓拍</h3>
+      <p id="recStatus" class="muted">Stopped</p>
+      <p id="recDir" class="muted"></p>
+      <div class="btnrow">
+        <label>间隔（秒） <input id="recInterval" type="number" min="0.01" step="0.01"></label>
+        <button id="setInterval">Set</button>
+      </div>
+      <div class="btnrow">
+        <button id="startRec" class="primary">Start Recording</button>
+        <button id="stopRec" class="danger">Stop Recording</button>
+      </div>
+    </div>
+    <div class="block">
+      <h3>运动触发录像</h3>
+      <p id="motionRecStatus" class="muted">Stopped</p>
+      <p id="motionRecDir" class="muted"></p>
+      <p id="motionSaving" class="muted">Motion: --</p>
+      <div class="btnrow">
+        <button id="startMotionRec" class="primary">Start Motion Recording</button>
+        <button id="stopMotionRec" class="danger">Stop Motion Recording</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="card history">
+    <div class="toolbar">
+      <h2>历史录像</h2>
+      <button id="refreshHistory">刷新</button>
+      <button id="convertAll" class="primary">转换全部待处理</button>
+      <span id="storageInfo" class="muted"></span>
+    </div>
+    <div class="auto">
+      <label><input type="checkbox" id="autoEnabled"> 每天自动转换</label>
+      <label>时间 <input type="time" id="autoTime" value="03:00"></label>
+      <label>视频 FPS <input type="number" id="convertFps" min="0.05" max="120" step="1" value="30"></label>
+      <button id="saveSettings">保存设置</button>
+      <span id="nextRun" class="muted"></span>
+      <span id="ffmpegWarn" class="warn"></span>
+    </div>
+    <div id="historyList" class="muted">加载中…</div>
+  </section>
+</main>
+
+<dialog id="player">
+  <div class="playerHead">
+    <strong id="playerTitle"></strong>
+    <button id="closePlayer">关闭</button>
+  </div>
+  <video id="playerVideo" controls playsinline preload="metadata"></video>
+</dialog>
+
+<div id="toast"></div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const video = $('video');
+  const videoWrap = $('videoWrap');
+  const historyList = $('historyList');
+  const player = $('player');
+  const playerVideo = $('playerVideo');
+  let firstSettingsLoad = true;
+
+  // ── tiny helpers ──────────────────────────────────────────────────────────
+  function toast(message, isError) {
+    const el = $('toast');
+    el.textContent = message;
+    el.classList.toggle('error', !!isError);
+    el.classList.add('show');
+    clearTimeout(toast._timer);
+    toast._timer = setTimeout(() => el.classList.remove('show'), 3200);
+  }
+
+  async function api(path, options) {
+    const response = await fetch(path, options);
+    let data = null;
+    try { data = await response.json(); } catch (e) { data = null; }
+    if (!response.ok) {
+      throw new Error((data && data.error) || `HTTP ${response.status}`);
+    }
+    return data;
+  }
+
+  function postJson(path, body) {
+    return api(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    });
+  }
+
+  function el(tag, className, text) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined && text !== null) node.textContent = text;
+    return node;
+  }
+
+  function mediaUrl(path) {
+    return '/media/' + String(path).split('/').map(encodeURIComponent).join('/');
+  }
+
+  function humanSize(bytes) {
+    if (!bytes) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let value = bytes, i = 0;
+    while (value >= 1024 && i < units.length - 1) { value /= 1024; i++; }
+    return value.toFixed(value >= 10 || i === 0 ? 0 : 1) + ' ' + units[i];
+  }
+
+  // ── sound ─────────────────────────────────────────────────────────────────
+  let audioCtx = null;
+  function initAudio() {
+    if (!audioCtx) {
+      try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { audioCtx = null; }
+    }
+    if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+  }
+  $('enableSound').addEventListener('click', function () {
+    initAudio();
+    this.style.display = 'none';
+  }, { once: true });
+
+  function playBeep() {
+    try {
+      if (!audioCtx) initAudio();
+      if (!audioCtx) return;
+      const now = audioCtx.currentTime;
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(880, now);
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.linearRampToValueAtTime(1.2, now + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.4);
+      osc.connect(gain); gain.connect(audioCtx.destination);
+      osc.start(now); osc.stop(now + 0.45);
+      osc.onended = () => { try { osc.disconnect(); gain.disconnect(); } catch (e) {} };
+    } catch (e) {}
+  }
+
+  // ── live status ───────────────────────────────────────────────────────────
+  let lastBeep = 0;
+  async function pollStatus() {
+    try {
+      const data = await api('/api/status');
+      const livePill = $('livePill');
+      livePill.textContent = data.camera_active ? '摄像头：运行中' : '摄像头：待机';
+      livePill.classList.toggle('on', !!data.camera_active);
+      $('clientPill').textContent = 'Clients: ' + (data.clients || 0);
+
+      const motionPill = $('motionPill');
+      motionPill.textContent = data.motion ? 'Motion: 检测到活动' : 'Motion: Normal';
+      motionPill.classList.toggle('alert', !!data.motion);
+      $('motionText').textContent = data.motion ? 'Motion Status: Someone has entered.' : 'Motion Status: Normal';
+
+      if (data.motion) {
+        videoWrap.classList.add('alert');
+        if (Date.now() - lastBeep > 5000) { playBeep(); lastBeep = Date.now(); }
+      } else {
+        videoWrap.classList.remove('alert');
+      }
+    } catch (e) { /* server restarting */ }
+    setTimeout(pollStatus, 800);
+  }
+
+  video.addEventListener('error', () => {
+    setTimeout(() => { video.src = '/video_feed?t=' + Date.now(); }, 2000);
+  });
+
+  // ── recording status ──────────────────────────────────────────────────────
+  async function pollRecording() {
+    try {
+      const data = await api('/api/recording/status');
+      $('recStatus').textContent = data.recording ? 'Recording' : 'Stopped';
+      $('recDir').textContent = data.dir ? 'Folder: ' + data.dir : '';
+      $('startRec').style.display = data.recording ? 'none' : 'inline-block';
+      $('stopRec').style.display = data.recording ? 'inline-block' : 'none';
+      if (document.activeElement !== $('recInterval')) {
+        $('recInterval').value = data.interval;
+      }
+
+      $('motionRecStatus').textContent = data.motion_recording ? 'Recording' : 'Stopped';
+      $('motionRecDir').textContent = data.motion_dir ? 'Folder: ' + data.motion_dir : '';
+      $('startMotionRec').style.display = data.motion_recording ? 'none' : 'inline-block';
+      $('stopMotionRec').style.display = data.motion_recording ? 'inline-block' : 'none';
+      $('storageInfo').textContent = '目录: ' + data.recordings_dir;
+      if (!data.ffmpeg_available) {
+        $('ffmpegWarn').textContent = '未找到 ffmpeg，无法转换视频';
+        $('convertAll').disabled = true;
+      }
+    } catch (e) { /* ignore */ }
+    setTimeout(pollRecording, 1000);
+  }
+
+  async function pollMotionSaving() {
+    try {
+      const data = await api('/motion_recording_status');
+      if (data.motion_recording) {
+        $('motionSaving').textContent = data.motion_detected ? 'Motion: YES (saving...)' : 'Motion: no';
+      } else {
+        $('motionSaving').textContent = 'Motion: --';
+      }
+    } catch (e) {}
+    setTimeout(pollMotionSaving, 500);
+  }
+
+  // ── settings ──────────────────────────────────────────────────────────────
+  async function loadSettings() {
+    try {
+      const data = await api('/api/settings');
+      const auto = data.auto_convert;
+      $('nextRun').textContent = auto.enabled && auto.next_run ? '下次自动转换: ' + auto.next_run : '自动转换未开启';
+      if (firstSettingsLoad) {
+        // Only populate the inputs once so periodic refreshes don't overwrite
+        // values the user is currently editing.
+        $('autoEnabled').checked = !!auto.enabled;
+        $('autoTime').value = auto.time;
+        $('convertFps').value = auto.fps;
+        $('recInterval').value = data.recording_interval;
+        firstSettingsLoad = false;
+      }
+      if (!data.ffmpeg_available) {
+        $('ffmpegWarn').textContent = '未找到 ffmpeg，无法转换视频';
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  $('saveSettings').addEventListener('click', async () => {
+    try {
+      const result = await postJson('/api/settings', {
+        auto_convert_enabled: $('autoEnabled').checked,
+        auto_convert_time: $('autoTime').value,
+        convert_fps: parseFloat($('convertFps').value),
+      });
+      $('nextRun').textContent = result.auto_convert && result.auto_convert.enabled && result.auto_convert.next_run
+        ? '下次自动转换: ' + result.auto_convert.next_run
+        : '自动转换未开启';
+      toast('设置已保存');
+    } catch (e) { toast(e.message, true); }
+  });
+
+  // ── history ───────────────────────────────────────────────────────────────
+  function kindLabel(kind) {
+    if (kind === 'motion') return '运动触发';
+    if (kind === 'snapshot') return '定时抓拍';
+    if (kind === 'video') return '视频';
+    return kind;
+  }
+
+  function videoLine(videoInfo) {
+    const line = el('div', 'videoLine');
+    line.append(el('span', null, videoInfo.name));
+    line.append(el('span', null, humanSize(videoInfo.size) + ' · ' + videoInfo.modified));
+    const play = el('button', 'primary', '播放');
+    play.addEventListener('click', () => openPlayer(videoInfo.url || mediaUrl(videoInfo.path), videoInfo.name));
+    line.append(play);
+    const del = el('button', 'danger', '删除');
+    del.addEventListener('click', () => deleteEntry(videoInfo.path, false, videoInfo.name, videoInfo.url || null));
+    line.append(del);
+    return line;
+  }
+
+  function renderHistory(data) {
+    historyList.replaceChildren();
+    const folders = (data && data.folders) || [];
+    if (!folders.length) {
+      historyList.append(el('div', 'empty', '暂无录像。开始录制或等待运动检测触发后，这里会显示记录。'));
+      return;
+    }
+
+    for (const folder of folders) {
+      const item = el('div', 'item');
+
+      const thumb = el('div');
+      if (folder.thumb) {
+        const img = el('img', 'thumb');
+        img.loading = 'lazy';
+        img.src = mediaUrl(folder.thumb);
+        img.alt = folder.name;
+        thumb.append(img);
+      } else {
+        thumb.append(el('div', 'thumb'));
+      }
+      item.append(thumb);
+
+      const main = el('div', 'itemMain');
+      const head = el('div', 'itemHead');
+      head.append(el('span', 'itemName', folder.name));
+      head.append(el('span', 'chip ' + folder.kind, kindLabel(folder.kind)));
+      if (folder.active) head.append(el('span', 'chip active', '录制中'));
+      if (folder.converting) {
+        const state = folder.conversion_state === 'queued' ? '排队中' : '转换中';
+        head.append(el('span', 'chip busy', state));
+      }
+      main.append(head);
+
+      const facts = [];
+      if (folder.image_count) facts.push(folder.image_count + ' 张图片');
+      if (folder.videos.length) facts.push(folder.videos.length + ' 个视频');
+      facts.push(folder.modified);
+      main.append(el('div', 'muted', facts.join(' · ')));
+
+      if (folder.videos.length) {
+        const videos = el('div', 'videos');
+        for (const videoInfo of folder.videos) videos.append(videoLine(videoInfo));
+        main.append(videos);
+      }
+      if (folder.conversion_message) {
+        main.append(el('div', folder.conversion_state === 'error' ? 'warn' : 'muted', folder.conversion_message));
+      }
+      item.append(main);
+
+      const actions = el('div', 'itemActions');
+      if (folder.image_count > 0) {
+        const convert = el('button', null, folder.converting ? '转换中…' : '转为 MP4');
+        convert.disabled = !!folder.converting || !!folder.active;
+        convert.addEventListener('click', () => convertFolder(folder.path));
+        actions.append(convert);
+
+        const del = el('button', 'danger', '删除文件夹');
+        del.disabled = !!folder.active || !!folder.converting;
+        del.addEventListener('click', () => deleteEntry(folder.path, true, folder.name));
+        actions.append(del);
+      }
+      item.append(actions);
+
+      historyList.append(item);
+    }
+  }
+
+  async function refreshHistory() {
+    try {
+      const data = await api('/api/history');
+      renderHistory(data);
+    } catch (e) {
+      historyList.replaceChildren(el('div', 'empty', '读取历史记录失败: ' + e.message));
+    }
+  }
+
+  async function convertFolder(path) {
+    try {
+      await postJson('/api/convert', { path });
+      toast('已加入转换队列');
+      setTimeout(refreshHistory, 1200);
+    } catch (e) { toast(e.message, true); }
+  }
+
+  async function deleteEntry(path, isFolder, name, url) {
+    const what = isFolder
+      ? `录像文件夹「${name}」及其所有文件`
+      : `视频「${name}」`;
+    if (!confirm(`确认删除${what}？此操作不可恢复。`)) return;
+    try {
+      await postJson('/api/delete', { path });
+      if (url && playerVideo.getAttribute('src') === url) closePlayer();
+      toast('已删除');
+      refreshHistory();
+    } catch (e) { toast(e.message, true); }
+  }
+
+  $('refreshHistory').addEventListener('click', refreshHistory);
+  $('convertAll').addEventListener('click', async () => {
+    try {
+      const data = await postJson('/api/convert/all', {});
+      toast(data.queued ? `已加入 ${data.queued} 个待转换文件夹` : '没有待转换的文件夹');
+      setTimeout(refreshHistory, 1200);
+    } catch (e) { toast(e.message, true); }
+  });
+
+  // ── player ────────────────────────────────────────────────────────────────
+  function openPlayer(url, title) {
+    $('playerTitle').textContent = title || url;
+    playerVideo.src = url;
+    player.showModal();
+    playerVideo.play().catch(() => {});
+  }
+  $('closePlayer').addEventListener('click', closePlayer);
+  player.addEventListener('close', closePlayer);
+  playerVideo.addEventListener('error', () => {
+    if (playerVideo.getAttribute('src')) {
+      toast('该视频无法播放（编码可能不受浏览器支持）', true);
+    }
+  });
+  function closePlayer() {
+    playerVideo.pause();
+    playerVideo.removeAttribute('src');
+    playerVideo.load();
+    if (player.open) player.close();
+  }
+
+  // ── recording controls ────────────────────────────────────────────────────
+  $('startRec').addEventListener('click', async () => {
+    try { await postJson('/api/recording/start'); await pollRecordingOnce(); toast('已开始定时抓拍'); }
+    catch (e) { toast(e.message, true); }
+  });
+  $('stopRec').addEventListener('click', async () => {
+    try { await postJson('/api/recording/stop'); await pollRecordingOnce(); toast('已停止定时抓拍'); }
+    catch (e) { toast(e.message, true); }
+  });
+  $('startMotionRec').addEventListener('click', async () => {
+    try { await postJson('/api/motion_recording/start'); await pollRecordingOnce(); toast('已开启运动触发录像'); }
+    catch (e) { toast(e.message, true); }
+  });
+  $('stopMotionRec').addEventListener('click', async () => {
+    try { await postJson('/api/motion_recording/stop'); await pollRecordingOnce(); toast('已停止运动触发录像'); }
+    catch (e) { toast(e.message, true); }
+  });
+  $('setInterval').addEventListener('click', async () => {
+    const value = parseFloat($('recInterval').value);
+    if (!isFinite(value) || value < 0.01) { toast('间隔需 >= 0.01 秒', true); return; }
+    try {
+      await postJson('/api/recording/interval', { interval: value });
+      toast('间隔已更新');
+    } catch (e) { toast(e.message, true); }
+  });
+  $('recInterval').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') $('setInterval').click();
+  });
+
+  async function pollRecordingOnce() {
+    try {
+      const data = await api('/api/recording/status');
+      $('recStatus').textContent = data.recording ? 'Recording' : 'Stopped';
+      $('recDir').textContent = data.dir ? 'Folder: ' + data.dir : '';
+      $('startRec').style.display = data.recording ? 'none' : 'inline-block';
+      $('stopRec').style.display = data.recording ? 'inline-block' : 'none';
+      $('motionRecStatus').textContent = data.motion_recording ? 'Recording' : 'Stopped';
+      $('motionRecDir').textContent = data.motion_dir ? 'Folder: ' + data.motion_dir : '';
+      $('startMotionRec').style.display = data.motion_recording ? 'none' : 'inline-block';
+      $('stopMotionRec').style.display = data.motion_recording ? 'inline-block' : 'none';
+    } catch (e) {}
+  }
+
+  // ── start polling ─────────────────────────────────────────────────────────
+  pollStatus();
+  pollRecording();
+  pollMotionSaving();
+  loadSettings();
+  refreshHistory();
+  setInterval(refreshHistory, 12000);
+  setInterval(loadSettings, 30000);
+})();
+</script>
+</body>
+</html>
